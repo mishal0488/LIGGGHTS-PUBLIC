@@ -65,7 +65,10 @@ namespace LAMMPS_NS
 DumpVTK::DumpVTK(LAMMPS *lmp) :
     lmp_(lmp),
     vtk_compressor_(VTK_COMP_NONE),
-    binary_(false)
+    // VTK 9.6.1 has an upstream ASCII XML writer crash for implicit cell-type
+    // arrays. Binary VTK XML remains readable by ParaView and avoids it.
+    // 'dump_modify <id> binary yes/no' still overrides this default.
+    binary_((VTK_MAJOR_VERSION > 9) || (VTK_MAJOR_VERSION == 9 && VTK_MINOR_VERSION >= 6))
 {
     filesuffixes[0] = (char*) ".vtk";
     filesuffixes[1] = (char*) ".vtp";

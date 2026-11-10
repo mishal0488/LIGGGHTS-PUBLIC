@@ -156,7 +156,8 @@ ELSEIF("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Intel")
 ELSEIF("${CMAKE_CXX_COMPILER_ID}" STREQUAL "MSVC")
   SET(OPT_CXX_FLAGS "/O2 /bigobj")
 
-  ADD_DEFINITIONS(-D_CRT_SECURE_NO_WARNINGS -D_USE_MATH_DEFINES -DNOMINMAX)
+  # The bundled legacy Windows stdint.h exposes PTRDIFF_MAX in C++ only with this macro.
+  ADD_DEFINITIONS(-D_CRT_SECURE_NO_WARNINGS -D_USE_MATH_DEFINES -DNOMINMAX -D__STDC_LIMIT_MACROS -D__STDC_CONSTANT_MACROS)
   ADD_DEFINITIONS("/wd4101 /wd4244 /wd4267")
 
   MESSAGE(STATUS "Compiler: msvc")
@@ -167,7 +168,7 @@ SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OPT_CXX_FLAGS}")
 IF(WIN32)
   INCLUDE_DIRECTORIES(WINDOWS/extra)
 
-  FIND_PACKAGE(Cygwin REQUIRED)
+  # CMake itself generates the style/model headers; Cygwin is not required.
 
   FOREACH(flag_var
     CMAKE_C_FLAGS_RELEASE CMAKE_C_FLAGS_MINSIZEREL CMAKE_C_FLAGS_RELWITHDEBINFO
@@ -354,32 +355,50 @@ IF(ENABLE_MPI)
     MESSAGE(FATAL_ERROR "MPI NOT found!")
   ENDIF()
 ELSE()
+  # Serial executables require the bundled MPI stub implementation.
+  # Without it <mpi.h> and MPI_* symbols are unresolved on Windows.
+  ADD_LIBRARY(liggghts_mpi_stubs STATIC STUBS/mpi.c)
+  SET_TARGET_PROPERTIES(liggghts_mpi_stubs PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  TARGET_INCLUDE_DIRECTORIES(liggghts_obj PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/STUBS")
+  TARGET_LINK_LIBRARIES(liggghts_bin PRIVATE liggghts_mpi_stubs)
+  TARGET_LINK_LIBRARIES(liggghts_static PUBLIC liggghts_mpi_stubs)
+  TARGET_LINK_LIBRARIES(liggghts_shared PUBLIC liggghts_mpi_stubs)
   SET(DISABLED_OPTIONS "${DISABLED_OPTIONS} MPI")
   MESSAGE(STATUS "Using MPI stubs")
 ENDIF()
 
 #=======================================
 IF(ENABLE_VTK)
-  FIND_PACKAGE(VTK COMPONENTS NO_MODULE)
+  # LIGGGHTS uses the MPI-aware VTK writers and controllers. The imported
+  # targets propagate header paths and transitive dependencies from VTK 9.6.
+  FIND_PACKAGE(VTK 9.6.1 EXACT REQUIRED CONFIG COMPONENTS
+    CommonCore
+    CommonDataModel
+    CommonExecutionModel
+    FiltersCore
+    FiltersGeneral
+    FiltersGeometry
+    IOLegacy
+    IOXML
+    IOParallelXML
+    ParallelMPI
+  )
 
-  IF(VTK_FOUND)
-    IF(VTK_VERSION VERSION_LESS "8.90.0")
-      INCLUDE(${VTK_USE_FILE})
-    ELSE()
-      INCLUDE_DIRECTORIES("${VTK_PREFIX_PATH}/include/vtk-${VTK_VERSION_MAJOR}.${VTK_VERSION_MINOR}")
-    ENDIF()
-    
-    TARGET_LINK_LIBRARIES(liggghts_static PUBLIC ${VTK_LIBRARIES})
-    TARGET_LINK_LIBRARIES(liggghts_shared PUBLIC ${VTK_LIBRARIES})
-    TARGET_LINK_LIBRARIES(liggghts_bin PUBLIC ${VTK_LIBRARIES})
+  # The LIGGGHTS source files are compiled in an OBJECT library; linking only
+  # the executable leaves vtk*.h unavailable during object compilation.
+  TARGET_LINK_LIBRARIES(liggghts_obj PRIVATE ${VTK_LIBRARIES})
+  TARGET_LINK_LIBRARIES(liggghts_static PUBLIC ${VTK_LIBRARIES})
+  TARGET_LINK_LIBRARIES(liggghts_shared PUBLIC ${VTK_LIBRARIES})
+  TARGET_LINK_LIBRARIES(liggghts_bin PUBLIC ${VTK_LIBRARIES})
 
-    ADD_DEFINITIONS(-DLAMMPS_VTK)
-    SET(ENABLED_OPTIONS "${ENABLED_OPTIONS} VTK")
-
-    MESSAGE(STATUS "Found VTK: version " ${VTK_VERSION})
-  ELSE()
-    MESSAGE(FATAL_ERROR "VTK NOT found!")
+  # Static VTK builds require compiled module initializers for factory hooks.
+  IF(COMMAND vtk_module_autoinit)
+    vtk_module_autoinit(TARGETS liggghts_bin MODULES ${VTK_LIBRARIES})
   ENDIF()
+
+  ADD_DEFINITIONS(-DLAMMPS_VTK)
+  SET(ENABLED_OPTIONS "${ENABLED_OPTIONS} VTK")
+  MESSAGE(STATUS "Found VTK: version ${VTK_VERSION}")
 ELSE()
   SET(DISABLED_OPTIONS "${DISABED_OPTIONS} VTK")
 ENDIF()

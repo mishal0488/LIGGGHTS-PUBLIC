@@ -1,0 +1,31 @@
+# Smoke-test actual VTK particle output, rather than merely starting the executable.
+atom_style granular
+atom_modify map array
+boundary m m m
+newton off
+communicate single vel yes
+units si
+region reg block -0.05 0.05 -0.05 0.05 0.0 0.1 units box
+create_box 1 reg
+neighbor 0.002 bin
+neigh_modify delay 0
+
+fix m1 all property/global youngsModulus peratomtype 5.e6
+fix m2 all property/global poissonsRatio peratomtype 0.45
+fix m3 all property/global coefficientRestitution peratomtypepair 1 0.3
+fix m4 all property/global coefficientFriction peratomtypepair 1 0.5
+pair_style gran model hertz tangential history
+pair_coeff * *
+timestep 0.00001
+
+fix pt all particletemplate/sphere 15485863 atom_type 1 density constant 2500 radius constant 0.005
+fix pd all particledistribution/discrete 15485867 1 pt 1.0
+fix ins all insert/pack seed 32452843 distributiontemplate pd maxattempt 200 insert_every once overlapcheck yes all_in yes vel constant 0. 0. 0. region reg volumefraction_region 0.002
+fix integrate all nve/sphere
+run 1
+
+dump vtk_test all custom/vtk 1 vtk-output/particles_*.vtu id type x y z vx vy vz radius
+# Deliberately rely on LIGGGHTS' VTK 9.6+ safe binary XML default.
+# This catches regressions where an unmodified input script would crash.
+run 1
+print "VTK particle output smoke test completed"
