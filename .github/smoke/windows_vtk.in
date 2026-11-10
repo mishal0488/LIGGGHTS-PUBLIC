@@ -25,5 +25,8 @@ fix integrate all nve/sphere
 run 1
 
 dump vtk_test all custom/vtk 1 vtk-output/particles_*.vtu id type x y z vx vy vz radius
+# VTK 9.6.1 ASCII XML writing can dereference a null iterator for implicit cell arrays.
+# Test LIGGGHTS with the documented binary VTU writer mode instead.
+dump_modify vtk_test binary yes
 run 1
 print "VTK particle output smoke test completed"
