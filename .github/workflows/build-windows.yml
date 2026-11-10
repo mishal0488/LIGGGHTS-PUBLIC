@@ -19,8 +19,10 @@ jobs:
       matrix:
         include:
           - flavour: serial
+            artifact: serial-no-vtk
             enable_mpi: "OFF"
           - flavour: mpi
+            artifact: mpi-vtk96
             enable_mpi: "ON"
 
     steps:
@@ -48,12 +50,74 @@ jobs:
           $bin = [Environment]::GetEnvironmentVariable("MSMPI_BIN", "Machine")
           "$bin" >> $env:GITHUB_PATH
 
-      - name: Configure with Visual Studio 2022 (x64)
+      # Build the MPI-enabled VTK writers and controller from Kitware's v9.6.1
+      # source. Caching the installed static libraries avoids repeated rebuilds.
+      - name: Restore cached VTK 9.6.1 static install
+        id: vtk-cache
+        if: matrix.enable_mpi == 'ON'
+        uses: actions/cache/restore@v4
+        with:
+          path: vtk-install
+          key: vtk-9.6.1-msmpi-static-win2022-v1
+
+      - name: Build static VTK 9.6.1 with MS-MPI
+        if: matrix.enable_mpi == 'ON' && steps.vtk-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
+          $ErrorActionPreference = "Stop"
+          git clone --depth 1 --branch v9.6.1 https://github.com/Kitware/VTK.git vtk-src
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C vtk-src submodule update --init --recursive --depth 1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $prefix = Join-Path $env:GITHUB_WORKSPACE "vtk-install"
+          $args = @(
+            "-S", "vtk-src", "-B", "vtk-build",
+            "-G", "Visual Studio 17 2022", "-A", "x64",
+            "-DCMAKE_INSTALL_PREFIX=$prefix",
+            "-DBUILD_SHARED_LIBS=OFF",
+            "-DVTK_USE_MPI=ON",
+            "-DVTK_WRAP_PYTHON=OFF",
+            "-DVTK_WRAP_JAVA=OFF",
+            "-DVTK_BUILD_TESTING=OFF",
+            "-DVTK_BUILD_EXAMPLES=OFF",
+            "-DVTK_BUILD_ALL_MODULES=OFF",
+            "-DVTK_GROUP_ENABLE_StandAlone=DONT_WANT",
+            "-DVTK_GROUP_ENABLE_Rendering=NO",
+            "-DVTK_MODULE_ENABLE_VTK_CommonCore=YES",
+            "-DVTK_MODULE_ENABLE_VTK_CommonDataModel=YES",
+            "-DVTK_MODULE_ENABLE_VTK_FiltersCore=YES",
+            "-DVTK_MODULE_ENABLE_VTK_FiltersGeneral=YES",
+            "-DVTK_MODULE_ENABLE_VTK_FiltersGeometry=YES",
+            "-DVTK_MODULE_ENABLE_VTK_IOLegacy=YES",
+            "-DVTK_MODULE_ENABLE_VTK_IOXML=YES",
+            "-DVTK_MODULE_ENABLE_VTK_IOParallelXML=YES",
+            "-DVTK_MODULE_ENABLE_VTK_ParallelMPI=YES"
+          )
+          & cmake @args
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build vtk-build --config Release --parallel 3
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --install vtk-build --config Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $config = Get-ChildItem vtk-install -Recurse -File -Filter "*vtk-config.cmake" | Select-Object -First 1
+          if (!$config) { throw "VTK install did not produce a CMake package configuration" }
+          Write-Host "VTK installed with CMake configuration at $($config.FullName)"
+
+      - name: Save compiled static VTK libraries
+        if: matrix.enable_mpi == 'ON' && steps.vtk-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: vtk-install
+          key: vtk-9.6.1-msmpi-static-win2022-v1
+
+      - name: Configure LIGGGHTS with Visual Studio 2022 (x64)
+        shell: pwsh
+        run: |
+          $vtkInstall = Join-Path $env:GITHUB_WORKSPACE "vtk-install"
           cmake -S src -B build -G "Visual Studio 17 2022" -A x64 `
             -DENABLE_MPI=${{ matrix.enable_mpi }} `
-            -DENABLE_VTK=OFF `
+            -DENABLE_VTK=${{ matrix.enable_mpi }} `
+            -DCMAKE_PREFIX_PATH="$vtkInstall" `
             -DENABLE_SQ=OFF `
             -DENABLE_MODEL_COHESION_OFF=ON `
             -DENABLE_MODEL_TANGENTIAL_OFF=ON `
@@ -78,10 +142,23 @@ jobs:
           }
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Validate VTK XML particle output
+        if: matrix.enable_mpi == 'ON'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path vtk-output | Out-Null
+          & mpiexec.exe -n 2 build/Release/liggghts.exe -in .github/smoke/windows_vtk.in
+          if ($LASTEXITCODE -ne 0) { throw "LIGGGHTS VTK smoke simulation failed" }
+          $vtu = Get-ChildItem vtk-output -Filter "*.vtu" -File | Select-Object -First 1
+          if (!$vtu) { throw "No .vtu particle output generated" }
+          $header = (Get-Content -Path $vtu.FullName -TotalCount 4) -join " "
+          if ($header -notmatch "VTKFile") { throw "Generated file is not VTK XML output: $($vtu.FullName)" }
+          Write-Host "Verified VTK particle output: $($vtu.FullName)"
+
       - name: Upload compiled executable
         uses: actions/upload-artifact@v4
         with:
-          name: liggghts-windows-x64-${{ matrix.flavour }}
+          name: liggghts-windows-x64-${{ matrix.artifact }}
           path: build/Release/liggghts.exe
           if-no-files-found: error
           retention-days: 30
