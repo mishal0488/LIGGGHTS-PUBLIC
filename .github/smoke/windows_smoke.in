@@ -1,0 +1,3 @@
+# Minimal smoke test for the compiled LIGGGHTS solver.
+echo both
+print "LIGGGHTS Windows smoke test passed"
