@@ -31,16 +31,22 @@ jobs:
         if: matrix.enable_mpi == 'ON'
         shell: pwsh
         run: |
-          winget install --id Microsoft.msmpi --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
-          if ($LASTEXITCODE -ne 0) { throw "Failed to install MS-MPI runtime" }
-          winget install --id Microsoft.msmpisdk --exact --silent --accept-package-agreements --accept-source-agreements --disable-interactivity
-          if ($LASTEXITCODE -ne 0) { throw "Failed to install MS-MPI SDK" }
-          $sdk = "${env:ProgramFiles(x86)}\Microsoft SDKs\MPI"
-          if (!(Test-Path "$sdk\Include\mpi.h")) { throw "MS-MPI SDK headers were not installed at $sdk" }
-          "MSMPI_INC=$sdk\Include" >> $env:GITHUB_ENV
-          "MSMPI_LIB64=$sdk\Lib\x64" >> $env:GITHUB_ENV
-          $runtime = "$env:ProgramFiles\Microsoft MPI\Bin"
-          "$runtime" >> $env:GITHUB_PATH
+          $base = "https://download.microsoft.com/download/7/2/7/72731ebb-b63c-4170-ade7-836966263a8f"
+          $sdkInstaller = Join-Path $env:RUNNER_TEMP "msmpisdk.msi"
+          $runtimeInstaller = Join-Path $env:RUNNER_TEMP "msmpisetup.exe"
+          Invoke-WebRequest "$base/msmpisdk.msi" -OutFile $sdkInstaller
+          Invoke-WebRequest "$base/msmpisetup.exe" -OutFile $runtimeInstaller
+          $s = Start-Process msiexec.exe -ArgumentList @("/quiet", "/qn", "/i", $sdkInstaller) -Wait -PassThru
+          if ($s.ExitCode -ne 0) { throw "MS-MPI SDK installer exit code $($s.ExitCode)" }
+          $s = Start-Process $runtimeInstaller -ArgumentList "-unattend" -Wait -PassThru
+          if ($s.ExitCode -ne 0) { throw "MS-MPI runtime installer exit code $($s.ExitCode)" }
+          foreach ($name in @("MSMPI_BIN", "MSMPI_INC", "MSMPI_LIB64")) {
+            $value = [Environment]::GetEnvironmentVariable($name, "Machine")
+            if (!$value) { throw "Expected MS-MPI environment variable $name not found" }
+            "$name=$value" >> $env:GITHUB_ENV
+          }
+          $bin = [Environment]::GetEnvironmentVariable("MSMPI_BIN", "Machine")
+          "$bin" >> $env:GITHUB_PATH
 
       - name: Configure with Visual Studio 2022 (x64)
         shell: pwsh
