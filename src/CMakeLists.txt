@@ -167,7 +167,7 @@ SET(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${OPT_CXX_FLAGS}")
 IF(WIN32)
   INCLUDE_DIRECTORIES(WINDOWS/extra)
 
-  FIND_PACKAGE(Cygwin REQUIRED)
+  # CMake itself generates the style/model headers; Cygwin is not required.
 
   FOREACH(flag_var
     CMAKE_C_FLAGS_RELEASE CMAKE_C_FLAGS_MINSIZEREL CMAKE_C_FLAGS_RELWITHDEBINFO
@@ -354,6 +354,14 @@ IF(ENABLE_MPI)
     MESSAGE(FATAL_ERROR "MPI NOT found!")
   ENDIF()
 ELSE()
+  # Serial executables require the bundled MPI stub implementation.
+  # Without it <mpi.h> and MPI_* symbols are unresolved on Windows.
+  ADD_LIBRARY(liggghts_mpi_stubs STATIC STUBS/mpi.c)
+  SET_TARGET_PROPERTIES(liggghts_mpi_stubs PROPERTIES POSITION_INDEPENDENT_CODE ON)
+  TARGET_INCLUDE_DIRECTORIES(liggghts_obj PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/STUBS")
+  TARGET_LINK_LIBRARIES(liggghts_bin PRIVATE liggghts_mpi_stubs)
+  TARGET_LINK_LIBRARIES(liggghts_static PUBLIC liggghts_mpi_stubs)
+  TARGET_LINK_LIBRARIES(liggghts_shared PUBLIC liggghts_mpi_stubs)
   SET(DISABLED_OPTIONS "${DISABLED_OPTIONS} MPI")
   MESSAGE(STATUS "Using MPI stubs")
 ENDIF()
